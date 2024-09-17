@@ -44,7 +44,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         super().__init__(source, volume)
         self.data = data
         self.title = data.get('title')
-        self.url = ""
+        self.url = data.get('url')  # Add this line to store the URL
 
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=False):
@@ -53,9 +53,41 @@ class YTDLSource(discord.PCMVolumeTransformer):
         if 'entries' in data:
             # take first item from a playlist
             data = data['entries'][0]
-        filename = data['title'] if stream else ytdl.prepare_filename(data)
-        return filename
+        filename = data['url'] if stream else ytdl.prepare_filename(data)  # Use URL if streaming
+        return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)  # Return instance of YTDLSource
 
+# MUSIC QUEUE
+music_queues = {}
+
+async def play_next(ctx):
+    if music_queues[ctx.guild.id]:
+        next_url = music_queues[ctx.guild.id].pop(0)
+        player = await YTDLSource.from_url(next_url, loop=bot.loop, stream=True)
+        voice_client = voice_clients[ctx.guild.id]
+        voice_client.play(player, after=lambda e: asyncio.run_coroutine_threadsafe(play_next(ctx), bot.loop))
+        await ctx.send(f'Now playing: {player.title}')
+    else:
+        await ctx.send("Queue is empty.")
+
+@bot.command(name='canta', help='To play song')
+async def play(ctx, url):
+    try:
+        voice_client = voice_clients.get(ctx.guild.id)
+
+        if voice_client is None:
+            await ctx.send("The bot is not connected to a voice channel.")
+            return
+
+        if ctx.guild.id not in music_queues:
+            music_queues[ctx.guild.id] = []
+
+        music_queues[ctx.guild.id].append(url)
+        await ctx.send(f'Added to queue: {url}')
+
+        if not voice_client.is_playing():
+            await play_next(ctx)
+    except Exception as e:
+        await ctx.send(f"An error occurred: {e}")
 
 # BOT COMMANDS
 
@@ -89,23 +121,6 @@ async def leave(ctx):
         del voice_clients[ctx.guild.id]
     else:
         await ctx.send("The bot is not connected to a voice channel.")
-
-
-@bot.command(name='canta', help='To play song')
-async def play(ctx, url):
-    try:
-        voice_client = voice_clients.get(ctx.guild.id)
-
-        if voice_client is None:
-            await ctx.send("The bot is not connected to a voice channel.")
-            return
-
-        async with ctx.typing():
-            title = await YTDLSource.from_url(url, loop=bot.loop)
-            voice_client.play(discord.FFmpegPCMAudio(executable="ffmpeg.exe", source=title))
-        await ctx.send('Now playing: {}' + title)
-    except Exception as e:
-        await ctx.send(f"An error occurred: {e}")
 
 
 @bot.command(name='fermate', help='This command pauses the song')
@@ -143,6 +158,17 @@ async def stop(ctx):
     else:
         await ctx.send("The bot is not playing anything at the moment.")
 
+
+# VIEW QUEUE COMMAND
+
+@bot.command(name='coda', help='Displays the current music queue')
+async def view_queue(ctx):
+    if ctx.guild.id in music_queues and music_queues[ctx.guild.id]:
+        queue = music_queues[ctx.guild.id]
+        queue_list = "\n".join([f"{index + 1}. {url}" for index, url in enumerate(queue)])
+        await ctx.send(f"Current queue:\n{queue_list}")
+    else:
+        await ctx.send("The queue is empty.")
 
 # RUN BOT LOCALLY
 
